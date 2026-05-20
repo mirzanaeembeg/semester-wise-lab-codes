@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSE4204 | Assignment 3 | Part A: 3D Cube</title>
+<style>
+  body {
+    margin: 0;
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: Arial, sans-serif;
+  }
+  canvas { border: 1px solid #333; }
+  #info {
+    color: #aaa;
+    font-size: 13px;
+    margin-top: 10px;
+    text-align: center;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="600" height="600"></canvas>
+<div id="info">
+  Left Click: Scale Up &nbsp;|&nbsp; Right Click: Scale Down<br>
+  ↓ Down Arrow: Rotate +X &nbsp;|&nbsp; → Right Arrow: Rotate +Y
+</div>
+<script>
+// ---- WebGL Setup ----
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl');
+if (!gl) { alert('WebGL not supported in this browser.'); }
+
+gl.enable(gl.DEPTH_TEST);
+gl.clearColor(0.12, 0.12, 0.18, 1.0);
+
+// ---- Vertex Shader ----
+const VS = `
+  attribute vec3 aPos;
+  attribute vec3 aColor;
+  uniform mat4 uMVP;
+  varying vec3 vColor;
+  void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vColor = aColor;
+  }
+`;
+
+// ---- Fragment Shader ----
+// uBlack switches between black (for border pass) and per-vertex color
+const FS = `
+  precision mediump float;
+  uniform bool uBlack;
+  varying vec3 vColor;
+  void main() {
+    if (uBlack)
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    else
+      gl_FragColor = vec4(vColor, 1.0);
+  }
+`;
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+  console.error('Link error:', gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+// ---- Cube Geometry ----
+// 24 vertices (4 per face) with per-face colors, 36 indices (2 triangles per face)
+const positions = new Float32Array([
+  // Front face  (z = +0.5)  -- Red
+  -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,   0.5,  0.5,  0.5,  -0.5,  0.5,  0.5,
+  // Back face   (z = -0.5)  -- Green
+   0.5, -0.5, -0.5,  -0.5, -0.5, -0.5,  -0.5,  0.5, -0.5,   0.5,  0.5, -0.5,
+  // Left face   (x = -0.5)  -- Blue
+  -0.5, -0.5, -0.5,  -0.5, -0.5,  0.5,  -0.5,  0.5,  0.5,  -0.5,  0.5, -0.5,
+  // Right face  (x = +0.5)  -- Yellow
+   0.5, -0.5,  0.5,   0.5, -0.5, -0.5,   0.5,  0.5, -0.5,   0.5,  0.5,  0.5,
+  // Top face    (y = +0.5)  -- Magenta
+  -0.5,  0.5,  0.5,   0.5,  0.5,  0.5,   0.5,  0.5, -0.5,  -0.5,  0.5, -0.5,
+  // Bottom face (y = -0.5)  -- Cyan
+  -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,   0.5, -0.5,  0.5,  -0.5, -0.5,  0.5,
+]);
+
+// One color per face, repeated 4 times (once per vertex)
+const faceColors = [
+  [1.0, 0.0, 0.0],   // Front  : Red
+  [0.0, 0.8, 0.0],   // Back   : Green
+  [0.0, 0.0, 1.0],   // Left   : Blue
+  [1.0, 1.0, 0.0],   // Right  : Yellow
+  [1.0, 0.0, 1.0],   // Top    : Magenta
+  [0.0, 1.0, 1.0],   // Bottom : Cyan
+];
+const colorData = [];
+for (const c of faceColors)
+  for (let i = 0; i < 4; i++) colorData.push(c[0], c[1], c[2]);
+const colors = new Float32Array(colorData);
+
+// Index buffer: two triangles per face
+const indexData = [];
+for (let f = 0; f < 6; f++) {
+  const b = f * 4;
+  indexData.push(b, b+1, b+2,  b, b+2, b+3);
+}
+const indices = new Uint16Array(indexData);
+
+// ---- Upload Buffers ----
+const posBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+const colBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+
+const idxBuf = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+// ---- Attribute / Uniform Locations ----
+const aPosLoc  = gl.getAttribLocation(prog, 'aPos');
+const aColLoc  = gl.getAttribLocation(prog, 'aColor');
+const uMVPLoc  = gl.getUniformLocation(prog, 'uMVP');
+const uBlkLoc  = gl.getUniformLocation(prog, 'uBlack');
+
+// ---- Matrix Math (column-major Float32Array) ----
+function mul(a, b) {
+  const r = new Float32Array(16);
+  for (let c = 0; c < 4; c++)
+    for (let row = 0; row < 4; row++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k*4+row] * b[c*4+k];
+      r[c*4+row] = s;
+    }
+  return r;
+}
+
+function perspective(fovY, aspect, near, far) {
+  const f  = 1.0 / Math.tan(fovY / 2);
+  const nf = 1.0 / (near - far);
+  return new Float32Array([
+    f / aspect, 0,            0,                  0,
+    0,          f,            0,                  0,
+    0,          0,  (far + near) * nf,            -1,
+    0,          0,  2 * far * near * nf,           0,
+  ]);
+}
+
+function translate(tx, ty, tz) {
+  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, tx,ty,tz,1]);
+}
+
+function rotateX(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return new Float32Array([1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]);
+}
+
+function rotateY(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return new Float32Array([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]);
+}
+
+function scale(sx, sy, sz) {
+  return new Float32Array([sx,0,0,0, 0,sy,0,0, 0,0,sz,0, 0,0,0,1]);
+}
+
+// ---- Projection and View ----
+const P = perspective(Math.PI / 4, 1.0, 0.1, 100.0);
+const V = translate(0, 0, -4);
+
+// ---- Application State ----
+let scaleFactor = 1.0;
+let angleX = 0.35;  // initial slight tilt to show 3D perspective
+let angleY = 0.45;
+
+// ---- Bind Geometry Buffers ----
+function bindGeometry() {
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.vertexAttribPointer(aPosLoc, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(aPosLoc);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+  gl.vertexAttribPointer(aColLoc, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(aColLoc);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+}
+
+// ---- Render ----
+function render() {
+  const rot = mul(rotateX(angleX), rotateY(angleY));
+
+  // ---- Pass 1: Draw BLACK cube (scaled up 1.05) ----
+  // Clear both color and depth buffers
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  bindGeometry();
+
+  const M_black = mul(scale(scaleFactor * 1.05, scaleFactor * 1.05, scaleFactor * 1.05), rot);
+  gl.uniformMatrix4fv(uMVPLoc, false, mul(P, mul(V, M_black)));
+  gl.uniform1i(uBlkLoc, 1);  // black mode ON
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+  // ---- Pass 2: Draw COLORED cube (normal scale) ----
+  // Clear ONLY the depth buffer – color buffer keeps the black border
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+
+  const M_color = mul(scale(scaleFactor, scaleFactor, scaleFactor), rot);
+  gl.uniformMatrix4fv(uMVPLoc, false, mul(P, mul(V, M_color)));
+  gl.uniform1i(uBlkLoc, 0);  // black mode OFF → per-vertex color
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+}
+
+// ---- Input Handling ----
+canvas.addEventListener('mousedown', function(e) {
+  e.preventDefault();
+  if (e.button === 0) {
+    // Left click: scale up
+    scaleFactor = Math.min(scaleFactor * 1.1, 5.0);
+  } else if (e.button === 2) {
+    // Right click: scale down
+    scaleFactor = Math.max(scaleFactor * 0.9, 0.1);
+  }
+  render();
+});
+
+canvas.addEventListener('contextmenu', function(e) {
+  e.preventDefault(); // suppress right-click context menu
+});
+
+document.addEventListener('keydown', function(e) {
+  const step = Math.PI / 36; // 5 degrees
+  if (e.key === 'ArrowRight') {
+    angleY += step;   // rotate +Y axis
+    e.preventDefault();
+  }
+  if (e.key === 'ArrowDown') {
+    angleX += step;   // rotate +X axis
+    e.preventDefault();
+  }
+  render();
+});
+
+// ---- Initial Render ----
+render();
+</script>
+</body>
+</html>

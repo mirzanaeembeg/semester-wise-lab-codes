@@ -1,0 +1,99 @@
+
+package demothreadproject;
+
+public class PotatoContainer {
+    public int storedPotato,capacity;
+    public PotatoContainer(int capacity){
+        this.storedPotato=0;
+        this.capacity=capacity;
+    }
+    synchronized public void putPotato(int numOfPotato, String name){
+        if((this.storedPotato+numOfPotato)>capacity){
+            try{
+                System.out.println(name+" is waiting to put "+numOfPotato+" KG potato");
+                System.out.println("Potato would be "+(this.storedPotato+numOfPotato)+" KG");
+                wait();
+                notify();
+            }catch(InterruptedException e){
+                System.out.println(e);
+            }
+        }
+        this.storedPotato=this.storedPotato+numOfPotato;
+        System.out.println("After "+name+" putting "+numOfPotato+" KG of potato,now "+storedPotato+" KG");
+        if(this.storedPotato>1){
+            notify();
+        }
+    }
+    public synchronized void takePotato(int numOfPotato,String name){
+        while((this.storedPotato-numOfPotato)<1){
+            try{
+                System.out.println(name+" is trying to take "+numOfPotato+" KG potato");
+                System.out.println("Current "+this.storedPotato+" KG");
+                notify();
+                wait();
+            }catch(InterruptedException e){
+                System.out.println(e);
+            }
+        }
+        this.storedPotato=this.storedPotato-numOfPotato;
+        System.out.println("After "+name+" taking "+numOfPotato+" KG of potato,remaining "+this.storedPotato+"KG");
+        if(this.storedPotato<1){
+            notify();
+        }
+    }
+}
+
+package demothreadproject;
+
+import java.util.Random;
+
+public class Employee implements Runnable{
+    PotatoContainer pc;
+    Random rm;
+
+    public Employee(PotatoContainer pc) {
+        this.pc = pc;
+        this.rm = new Random();
+    }
+    public void run(){
+        int storedPotat=1+rm.nextInt(5);
+        pc.putPotato(storedPotat,Thread.currentThread().getName());
+    }
+}
+
+package demothreadproject;
+
+import java.util.Random;
+
+public class Customer implements Runnable {
+    PotatoContainer pc;
+    Random rm;
+
+    public Customer(PotatoContainer pc) {
+        this.pc = pc;
+        this.rm = new Random();
+    }
+    public void run(){
+        int storedPotat=1+rm.nextInt(5);
+        pc.takePotato(storedPotat,Thread.currentThread().getName());
+    }
+}
+package demothreadproject;
+
+public class DemoThreadProject {
+
+    public static void main(String[] args) {
+
+        PotatoContainer pc = new PotatoContainer(50);
+
+        Employee e = new Employee(pc);
+        Customer c = new Customer(pc);
+
+        Thread e1 = new Thread(e, "e1");
+        Thread c1 = new Thread(c, "c1");
+
+        e1.start();
+        c1.start();
+    }
+
+}

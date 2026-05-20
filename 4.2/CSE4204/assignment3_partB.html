@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSE4204 | Assignment 3 | Part B: Crate with Lid</title>
+<style>
+  body {
+    margin: 0;
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: Arial, sans-serif;
+  }
+  canvas { border: 1px solid #333; }
+  #info {
+    color: #aaa;
+    font-size: 13px;
+    margin-top: 10px;
+    text-align: center;
+    line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="600" height="600"></canvas>
+<div id="info">
+  ← Left Arrow: Rotate +Y &nbsp;|&nbsp; → Right Arrow: Rotate -Y<br>
+  ↑ Up Arrow: Open Lid &nbsp;|&nbsp; ↓ Down Arrow: Close Lid
+</div>
+
+<script>
+// ===================================================================
+// CSE4204 - Assignment 3 - Part B : Crate with Lid
+// ===================================================================
+// Structure:
+//   initGL_1() – sets up shader program 1 (crate) and its buffers
+//   initGL_2() – sets up shader program 2 (lid) and its buffers
+//   draw_crate() – draws the crate using prog1
+//   draw_lid()   – draws the lid   using prog2
+// ===================================================================
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl');
+if (!gl) { alert('WebGL not supported in this browser.'); }
+
+gl.enable(gl.DEPTH_TEST);
+gl.clearColor(0.12, 0.12, 0.18, 1.0);
+
+// ===================================================================
+// Matrix Math Utilities (column-major Float32Array)
+// ===================================================================
+
+function mul(a, b) {
+  const r = new Float32Array(16);
+  for (let c = 0; c < 4; c++)
+    for (let row = 0; row < 4; row++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k*4+row] * b[c*4+k];
+      r[c*4+row] = s;
+    }
+  return r;
+}
+
+function perspective(fovY, aspect, near, far) {
+  const f  = 1.0 / Math.tan(fovY / 2);
+  const nf = 1.0 / (near - far);
+  return new Float32Array([
+    f / aspect,  0,           0,                  0,
+    0,           f,           0,                  0,
+    0,           0, (far+near)*nf,                -1,
+    0,           0, 2*far*near*nf,                 0,
+  ]);
+}
+
+function translate(tx, ty, tz) {
+  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, tx,ty,tz,1]);
+}
+
+function rotateX(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return new Float32Array([1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]);
+}
+
+function rotateY(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return new Float32Array([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]);
+}
+
+function scaleM(sx, sy, sz) {
+  return new Float32Array([sx,0,0,0, 0,sy,0,0, 0,0,sz,0, 0,0,0,1]);
+}
+
+// ===================================================================
+// Shared Cube Geometry (same coordinates for crate AND lid)
+// 24 vertices (4 per face), 36 indices
+// ===================================================================
+
+const cubePositions = new Float32Array([
+  // Front  (z = +0.5)
+  -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,   0.5,  0.5,  0.5,  -0.5,  0.5,  0.5,
+  // Back   (z = -0.5)
+   0.5, -0.5, -0.5,  -0.5, -0.5, -0.5,  -0.5,  0.5, -0.5,   0.5,  0.5, -0.5,
+  // Left   (x = -0.5)
+  -0.5, -0.5, -0.5,  -0.5, -0.5,  0.5,  -0.5,  0.5,  0.5,  -0.5,  0.5, -0.5,
+  // Right  (x = +0.5)
+   0.5, -0.5,  0.5,   0.5, -0.5, -0.5,   0.5,  0.5, -0.5,   0.5,  0.5,  0.5,
+  // Top    (y = +0.5)
+  -0.5,  0.5,  0.5,   0.5,  0.5,  0.5,   0.5,  0.5, -0.5,  -0.5,  0.5, -0.5,
+  // Bottom (y = -0.5)
+  -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,   0.5, -0.5,  0.5,  -0.5, -0.5,  0.5,
+]);
+
+// Per-face colors for the crate (4 vertices per face, same color)
+const crateColorData = [
+  // Front  : orange
+  1.0, 0.5, 0.0,   1.0, 0.5, 0.0,   1.0, 0.5, 0.0,   1.0, 0.5, 0.0,
+  // Back   : purple
+  0.5, 0.0, 1.0,   0.5, 0.0, 1.0,   0.5, 0.0, 1.0,   0.5, 0.0, 1.0,
+  // Left   : teal
+  0.0, 0.7, 0.7,   0.0, 0.7, 0.7,   0.0, 0.7, 0.7,   0.0, 0.7, 0.7,
+  // Right  : pink
+  1.0, 0.4, 0.7,   1.0, 0.4, 0.7,   1.0, 0.4, 0.7,   1.0, 0.4, 0.7,
+  // Top    : light green
+  0.4, 0.9, 0.4,   0.4, 0.9, 0.4,   0.4, 0.9, 0.4,   0.4, 0.9, 0.4,
+  // Bottom : tan
+  0.8, 0.6, 0.2,   0.8, 0.6, 0.2,   0.8, 0.6, 0.2,   0.8, 0.6, 0.2,
+];
+const crateColors = new Float32Array(crateColorData);
+
+// Index buffer (shared for both crate and lid draw calls)
+const cubeIndexData = [];
+for (let f = 0; f < 6; f++) {
+  const b = f * 4;
+  cubeIndexData.push(b, b+1, b+2,  b, b+2, b+3);
+}
+const cubeIndices = new Uint16Array(cubeIndexData);
+
+// ===================================================================
+// Shader helper
+// ===================================================================
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+  return s;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    console.error('Link error:', gl.getProgramInfoLog(p));
+  return p;
+}
+
+// ===================================================================
+// Program 1 – Crate  (per-vertex color)
+// ===================================================================
+
+let prog1;
+let mvp1Loc, aPos1, aCol1;
+let crate_pBuf, crate_cBuf, crate_iBuf;
+
+function initGL_1() {
+  const vs1 = `
+    attribute vec3 aPos;
+    attribute vec3 aColor;
+    uniform mat4 uMVP;
+    varying vec3 vColor;
+    void main() {
+      gl_Position = uMVP * vec4(aPos, 1.0);
+      vColor = aColor;
+    }
+  `;
+  const fs1 = `
+    precision mediump float;
+    varying vec3 vColor;
+    void main() {
+      gl_FragColor = vec4(vColor, 1.0);
+    }
+  `;
+
+  prog1   = createProgram(vs1, fs1);
+  mvp1Loc = gl.getUniformLocation(prog1, 'uMVP');
+  aPos1   = gl.getAttribLocation(prog1, 'aPos');
+  aCol1   = gl.getAttribLocation(prog1, 'aColor');
+
+  // Position buffer
+  crate_pBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, crate_pBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, cubePositions, gl.STATIC_DRAW);
+
+  // Color buffer
+  crate_cBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, crate_cBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, crateColors, gl.STATIC_DRAW);
+
+  // Index buffer
+  crate_iBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, crate_iBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeIndices, gl.STATIC_DRAW);
+}
+
+// ===================================================================
+// Program 2 – Lid  (uniform color)
+// ===================================================================
+
+let prog2;
+let mvp2Loc, uLidColorLoc, aPos2;
+let lid_pBuf, lid_iBuf;
+
+function initGL_2() {
+  const vs2 = `
+    attribute vec3 aPos;
+    uniform mat4 uMVP;
+    void main() {
+      gl_Position = uMVP * vec4(aPos, 1.0);
+    }
+  `;
+  const fs2 = `
+    precision mediump float;
+    uniform vec4 uLidColor;
+    void main() {
+      gl_FragColor = uLidColor;
+    }
+  `;
+
+  prog2        = createProgram(vs2, fs2);
+  mvp2Loc      = gl.getUniformLocation(prog2, 'uMVP');
+  uLidColorLoc = gl.getUniformLocation(prog2, 'uLidColor');
+  aPos2        = gl.getAttribLocation(prog2, 'aPos');
+
+  // The lid uses the same vertex positions as the crate (same coordinates)
+  lid_pBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lid_pBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, cubePositions, gl.STATIC_DRAW);
+
+  lid_iBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lid_iBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeIndices, gl.STATIC_DRAW);
+}
+
+// ===================================================================
+// Application State
+// ===================================================================
+
+// Initial 30-degree rotation on both X and Y axes
+const INIT_RX = 30.0 * Math.PI / 180.0;
+const INIT_RY = 30.0 * Math.PI / 180.0;
+
+let yRot     = 0.0;   // user-controlled Y rotation of the whole scene
+let lidAngle = 0.0;   // lid opening angle: 0 = closed, -PI/2 = fully open
+
+// Perspective projection and view matrix
+const P = perspective(Math.PI / 4.0, 1.0, 0.1, 100.0);
+const V = translate(0.0, 0.0, -4.0);
+
+// Returns the composite scene rotation matrix (initial tilt + user rotation)
+function getSceneRotation() {
+  // Apply: user Y rotation on top of initial X and Y tilt
+  return mul(rotateY(yRot), mul(rotateX(INIT_RX), rotateY(INIT_RY)));
+}
+
+// ===================================================================
+// draw_crate  –  draws the crate using prog1 (per-vertex color)
+// ===================================================================
+function draw_crate() {
+  gl.useProgram(prog1);
+
+  // Crate occupies the unit cube directly; only scene rotation applied
+  const M   = getSceneRotation();
+  const mvp = mul(P, mul(V, M));
+  gl.uniformMatrix4fv(mvp1Loc, false, mvp);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, crate_pBuf);
+  gl.vertexAttribPointer(aPos1, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(aPos1);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, crate_cBuf);
+  gl.vertexAttribPointer(aCol1, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(aCol1);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, crate_iBuf);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+}
+
+// ===================================================================
+// draw_lid  –  draws the lid using prog2 (uniform wood color)
+//
+// The lid is the scaled (skewed) version of the crate:
+//   scale(1.1, 0.12, 1.1) makes it thin and slightly wider
+//   translate(0, 0.56, 0) positions it on top of the crate
+//
+// Lid opening uses composite transformation:
+//   Translate the back edge (hinge) to the origin,
+//   apply rotateX(lidAngle), then undo the translation.
+//   This rotates the lid around its back (z = -0.55) edge.
+// ===================================================================
+function draw_lid() {
+  gl.useProgram(prog2);
+
+  const sceneRot = getSceneRotation();
+
+  // Step 1 : scale the unit cube into a thin, wider lid
+  const S_lid  = scaleM(1.1, 0.12, 1.1);
+
+  // Step 2 : translate up so the lid sits on top of the crate
+  //   center-y of scaled lid = 0  →  0 + 0.56 = 0.56
+  //   lid spans y: 0.50 to 0.62
+  const T_up   = translate(0.0, 0.56, 0.0);
+
+  // Hinge is now at the bottom-back edge of the lid:  y = 0.5, z = -0.55
+  // Step 3 : translate so the hinge lies on the X-axis (y=0, z=0)
+  const T_fwd  = translate(0.0, -0.5, 0.55);
+
+  // Step 4 : rotate around X-axis (opens/closes the lid)
+  const R_hinge = rotateX(lidAngle);
+
+  // Step 5 : undo the hinge translation
+  const T_bck  = translate(0.0, 0.5, -0.55);
+
+  // Composite lid-local transform (applied right-to-left to vertices):
+  //   S_lid → T_up → T_fwd → R_hinge → T_bck
+  const lidLocal = mul(T_bck, mul(R_hinge, mul(T_fwd, mul(T_up, S_lid))));
+
+  // Full model matrix: scene rotation applied after lid-local transform
+  const M   = mul(sceneRot, lidLocal);
+  const mvp = mul(P, mul(V, M));
+
+  gl.uniformMatrix4fv(mvp2Loc, false, mvp);
+  gl.uniform4f(uLidColorLoc, 0.65, 0.42, 0.15, 1.0);  // warm wood brown
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, lid_pBuf);
+  gl.vertexAttribPointer(aPos2, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(aPos2);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lid_iBuf);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+}
+
+// ===================================================================
+// Render Loop
+// ===================================================================
+function render() {
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  draw_crate();
+  draw_lid();
+}
+
+// ===================================================================
+// Input Handling
+// ===================================================================
+document.addEventListener('keydown', function(e) {
+  const step = Math.PI / 36;  // 5 degrees per key press
+
+  switch (e.key) {
+    case 'ArrowLeft':
+      // Rotate crate+lid +Y (positive)
+      yRot += step;
+      e.preventDefault();
+      break;
+    case 'ArrowRight':
+      // Rotate crate+lid -Y (negative)
+      yRot -= step;
+      e.preventDefault();
+      break;
+    case 'ArrowUp':
+      // Open lid  (decrease angle toward -PI/2)
+      lidAngle = Math.max(lidAngle - step, -Math.PI / 2);
+      e.preventDefault();
+      break;
+    case 'ArrowDown':
+      // Close lid (increase angle toward 0)
+      lidAngle = Math.min(lidAngle + step, 0);
+      e.preventDefault();
+      break;
+  }
+  render();
+});
+
+// ===================================================================
+// Initialise and draw
+// ===================================================================
+initGL_1();
+initGL_2();
+render();
+</script>
+</body>
+</html>
